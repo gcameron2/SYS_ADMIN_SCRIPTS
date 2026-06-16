@@ -215,15 +215,14 @@ install_pkg() {
 
 # On RHEL/CentOS, EPEL is needed for ufw and fail2ban
 if [[ "$PKG_MANAGER" != "apt" ]]; then
-  install_pkg "epel-release" || warn "epel-release install failed — ufw/fail2ban may be unavailable"
+  install_pkg "epel-release" || warn "epel-release install failed — fail2ban and dnf-automatic may be unavailable"
 fi
 
-BASELINE_PACKAGES=(curl wget git ufw fail2ban htop net-tools)
-# unattended-upgrades is Debian-only; dnf-automatic is the RHEL equivalent
 if [[ "$PKG_MANAGER" == "apt" ]]; then
-  BASELINE_PACKAGES+=(unattended-upgrades)
+  BASELINE_PACKAGES=(curl wget git ufw fail2ban htop net-tools unattended-upgrades)
 else
-  BASELINE_PACKAGES+=(dnf-automatic)
+  # ufw is not in EPEL 10; RHEL/CentOS uses firewalld (pre-installed on CentOS Stream 10)
+  BASELINE_PACKAGES=(curl wget git fail2ban htop net-tools dnf-automatic)
 fi
 
 for pkg in "${BASELINE_PACKAGES[@]}"; do
@@ -312,7 +311,7 @@ else
 fi
 
 # Lock password login for the admin account — key-only access
-if passwd -S "$ADMIN_USER" 2>/dev/null | grep -q " L "; then
+if passwd -S "$ADMIN_USER" 2>/dev/null | grep -qE ' (L|LK) '; then
   skip "Password login for $ADMIN_USER already locked"
 else
   step "Locking password login for $ADMIN_USER (key-only)"
@@ -376,40 +375,69 @@ plog "STEP6  ssh_hardening=applied  sshd_backup=$SSHD_BACKUP"
 # ──────────────────────────────────────────────
 #  Step 7: Firewall (UFW)
 # ──────────────────────────────────────────────
-header "Step 7 — Firewall (UFW)"
+header "Step 7 — Firewall"
 
-if ! command -v ufw &>/dev/null; then
-  warn "ufw not found — skipping firewall configuration"
-else
-  # Set default policies before enabling to avoid locking ourselves out
-  step "Setting ufw default policies"
-  ufw default deny incoming  &>/dev/null
-  ufw default allow outgoing &>/dev/null
-  ok "Default: deny incoming, allow outgoing"
+case "$PKG_MANAGER" in
+  apt)
+    if ! command -v ufw &>/dev/null; then
+      warn "ufw not found — skipping firewall configuration"
+    else
+      step "Setting ufw default policies"
+      ufw default deny incoming  &>/dev/null
+      ufw default allow outgoing &>/dev/null
+      ok "Default: deny incoming, allow outgoing"
 
-  # Allow SSH before enabling — otherwise we lock ourselves out
-  if ufw status 2>/dev/null | grep -q "22/tcp\|OpenSSH\|ALLOW"; then
-    skip "SSH rule already present in ufw"
-  else
-    step "Allowing SSH through ufw"
-    ufw allow ssh &>/dev/null
-    ok "SSH allowed"
-  fi
+      if ufw status 2>/dev/null | grep -q "22/tcp\|OpenSSH\|ALLOW"; then
+        skip "SSH rule already present in ufw"
+      else
+        step "Allowing SSH through ufw"
+        ufw allow ssh &>/dev/null
+        ok "SSH allowed"
+      fi
 
-  # Enable ufw non-interactively; idempotent if already active
-  ufw_status=$(ufw status 2>/dev/null | head -1 || true)
-  if echo "$ufw_status" | grep -qi "active"; then
-    skip "ufw already active"
-  else
-    step "Enabling ufw"
-    ufw --force enable &>/dev/null
-    ok "ufw enabled"
-  fi
+      ufw_status=$(ufw status 2>/dev/null | head -1 || true)
+      if echo "$ufw_status" | grep -qi "active"; then
+        skip "ufw already active"
+      else
+        step "Enabling ufw"
+        ufw --force enable &>/dev/null
+        ok "ufw enabled"
+      fi
 
-  ufw status verbose 2>/dev/null | sed 's/^/  /'
-fi
+      ufw status verbose 2>/dev/null | sed 's/^/  /'
+    fi
+    plog "STEP7  firewall=ufw  default=deny-incoming  ssh=allowed"
+    ;;
+  dnf|yum)
+    # CentOS Stream / RHEL ships firewalld by default; use it instead of ufw
+    if ! command -v firewall-cmd &>/dev/null; then
+      step "Installing firewalld"
+      "$PKG_MANAGER" install -y -q firewalld &>/dev/null || warn "firewalld install failed — skipping firewall"
+    fi
 
-plog "STEP7  firewall=ufw  default=deny-incoming  ssh=allowed"
+    if command -v firewall-cmd &>/dev/null; then
+      if ! systemctl is-active --quiet firewalld 2>/dev/null; then
+        step "Enabling and starting firewalld"
+        systemctl enable --now firewalld &>/dev/null
+        ok "firewalld enabled and started"
+      else
+        skip "firewalld already active"
+      fi
+
+      if firewall-cmd --list-services --permanent 2>/dev/null | grep -qw "ssh"; then
+        skip "SSH already allowed in firewalld"
+      else
+        step "Allowing SSH through firewalld"
+        firewall-cmd --permanent --add-service=ssh &>/dev/null
+        firewall-cmd --reload &>/dev/null
+        ok "SSH allowed in firewalld"
+      fi
+
+      firewall-cmd --list-all 2>/dev/null | sed 's/^/  /'
+    fi
+    plog "STEP7  firewall=firewalld  default=deny-incoming  ssh=allowed"
+    ;;
+esac
 
 # ──────────────────────────────────────────────
 #  Step 8: Unattended Security Upgrades
@@ -487,7 +515,13 @@ header "Step 10 — Completion Log"
   echo "  sudo group:          $SUDO_GROUP"
   echo "  ssh key authorized:  $AUTH_KEYS"
   echo "  ssh hardening:       applied"
-  echo "  firewall:            $(ufw status 2>/dev/null | head -1 || echo 'ufw not found')"
+  if command -v firewall-cmd &>/dev/null; then
+    echo "  firewall:            firewalld — $(firewall-cmd --state 2>/dev/null || echo 'state unknown')"
+  elif command -v ufw &>/dev/null; then
+    echo "  firewall:            $(ufw status 2>/dev/null | head -1 || echo 'ufw unavailable')"
+  else
+    echo "  firewall:            none configured"
+  fi
   echo "  auto upgrades:       enabled"
   echo "  root locked:         yes"
   echo "  steps applied:       $STEPS_APPLIED"

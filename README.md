@@ -18,7 +18,7 @@ scripts/
 │   └── service-watchdog.sh       # Monitor services, restart on failure, alert
 ├── security/
 │   ├── ssh-hardening.sh          # Harden sshd_config with dry-run and rollback
-│   └── failed-login-report.sh    # Parse auth logs, flag IPs, optional ufw block
+│   └── failed-login-report.sh    # Parse auth logs, flag IPs, optional firewall block
 └── automation/
     ├── backup-and-verify.sh      # Rsync backup with checksum verification
     └── provision-new-server.sh   # Bootstrap a fresh server to a secure baseline
@@ -28,10 +28,10 @@ scripts/
 
 ## Requirements
 
-- **OS:** Debian/Ubuntu or RHEL/CentOS/Fedora
+- **OS:** Debian/Ubuntu, RHEL/CentOS/Fedora, or CentOS Stream 10
 - **Shell:** Bash 4.x+
 - **Run as:** root / sudo (all scripts enforce this)
-- **Optional:** `mailx` for email alerts, `ufw` for IP blocking, `shuf` for checksum spot-checks
+- **Optional:** `mailx` for email alerts, `firewall-cmd` (RHEL/CentOS) or `ufw` (Debian/Ubuntu) for IP blocking, `shuf` for checksum spot-checks
 
 ---
 
@@ -127,7 +127,7 @@ sudo ./scripts/security/ssh-hardening.sh --allow-users "alice,bob,deploy"
 ---
 
 ### `failed-login-report.sh`
-Parses SSH auth logs for failed login attempts. Summarizes by IP, flags IPs above a threshold, and optionally blocks them via `ufw`.
+Parses SSH auth logs for failed login attempts. Summarizes by IP, flags IPs above a threshold, and optionally blocks them via `firewall-cmd` (RHEL/CentOS) or `ufw` (Debian/Ubuntu).
 
 **Auto-detects log source:** `/var/log/auth.log` (Debian/Ubuntu), `/var/log/secure` (RHEL), or `journalctl` fallback.
 
@@ -165,7 +165,7 @@ sudo ./scripts/automation/backup-and-verify.sh -s /home -d /mnt/nas/backups --re
 ### `provision-new-server.sh`
 Bootstraps a fresh Linux server to a known secure baseline. Idempotent — safe to run multiple times without side effects. Compatible with EC2 Launch Template User Data.
 
-**Steps:** system update, baseline packages, timezone, hostname, admin user + SSH key, SSH hardening, UFW firewall, unattended security upgrades, root password lock, completion log.
+**Steps:** system update, baseline packages, timezone, hostname, admin user + SSH key, SSH hardening, firewall (`firewalld` on RHEL/CentOS, `ufw` on Debian/Ubuntu), unattended security upgrades, root password lock, completion log.
 
 ```bash
 sudo ./scripts/automation/provision-new-server.sh \

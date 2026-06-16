@@ -13,6 +13,7 @@ set -euo pipefail
 # ── Defaults ──────────────────────────────────
 THRESHOLD=10
 BLOCK=false
+FIREWALL_TOOL=""
 LINES=0          # 0 = all lines
 OUTPUT_FILE=""
 QUIET=false
@@ -56,7 +57,7 @@ Auto-detects log source:
 
 Options:
   -t, --threshold N    Flag IPs with >= N failed attempts (default: 10)
-  -b, --block          Block flagged IPs via 'ufw deny from <ip>'
+  -b, --block          Block flagged IPs via firewall-cmd (RHEL/CentOS) or ufw (Debian/Ubuntu)
   -l, --lines   N      Only analyze the last N lines of the log (default: all)
   -o, --output  FILE   Write report to file
   -q, --quiet          No color output (cron-safe)
@@ -98,9 +99,15 @@ for cmd in "${REQUIRED_CMDS[@]}"; do
   fi
 done
 
-if [[ "$BLOCK" == true ]] && ! command -v ufw &>/dev/null; then
-  echo "Error: --block requires ufw, but ufw was not found." >&2
-  exit 1
+if [[ "$BLOCK" == true ]]; then
+  if command -v firewall-cmd &>/dev/null; then
+    FIREWALL_TOOL="firewall-cmd"
+  elif command -v ufw &>/dev/null; then
+    FIREWALL_TOOL="ufw"
+  else
+    echo "Error: --block requires firewall-cmd (firewalld) or ufw, but neither was found." >&2
+    exit 1
+  fi
 fi
 
 # ── Redirect to file if --output is set ───────
@@ -228,19 +235,37 @@ echo ""
 header "Section 5 — Blocking"
 
 if [[ "$BLOCK" == false ]]; then
-  log "Skipping — pass --block to enable automatic IP blocking via ufw"
+  log "Skipping — pass --block to enable automatic IP blocking via firewall-cmd or ufw"
 elif [[ ${#FLAGGED_IPS[@]} -eq 0 ]]; then
   ok "No flagged IPs to block."
+elif [[ "$FIREWALL_TOOL" == "firewall-cmd" ]]; then
+  if ! firewall-cmd --state &>/dev/null; then
+    warn "firewalld is not running — rules will be added but not enforced until firewalld starts"
+  fi
+
+  for ip in "${FLAGGED_IPS[@]}"; do
+    if firewall-cmd --list-rich-rules --permanent 2>/dev/null | grep -q "source address='${ip}'"; then
+      ok "Already blocked: $ip"
+      continue
+    fi
+
+    if firewall-cmd --permanent \
+         --add-rich-rule="rule family='ipv4' source address='${ip}' reject" &>/dev/null \
+       && firewall-cmd --reload &>/dev/null; then
+      ok "Blocked: $ip"
+      (( BLOCKED_COUNT++ )) || true
+    else
+      warn "Failed to block: $ip — check firewall-cmd status manually"
+    fi
+  done
 else
-  # Confirm ufw is active before adding rules — rules added to an inactive
-  # ufw are silently accepted but never enforced
+  # ufw fallback (Debian/Ubuntu)
   ufw_status=$(ufw status 2>/dev/null | head -1 || true)
   if ! echo "$ufw_status" | grep -qi "active"; then
     warn "ufw is not active — rules will be added but not enforced until ufw is enabled"
   fi
 
   for ip in "${FLAGGED_IPS[@]}"; do
-    # Skip if a deny rule already exists for this IP
     if ufw status 2>/dev/null | grep -q "DENY.*${ip}"; then
       ok "Already blocked: $ip"
       continue
@@ -271,7 +296,7 @@ echo -e "  ${RED}Alerts:${RESET}           $ALERT_COUNT"
 echo ""
 
 if [[ $FLAGGED_COUNT -gt 0 && "$BLOCK" == false ]]; then
-  warn "$FLAGGED_COUNT IP(s) exceeded the threshold. Re-run with --block to deny them via ufw."
+  warn "$FLAGGED_COUNT IP(s) exceeded the threshold. Re-run with --block to deny them via firewall-cmd or ufw."
 fi
 
 if [[ $ALERT_COUNT -gt 0 ]]; then
