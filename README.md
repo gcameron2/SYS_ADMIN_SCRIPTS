@@ -14,14 +14,12 @@ scripts/
 │   └── user-audit.sh             # Audit local accounts for security issues
 ├── monitoring/
 │   ├── system-health-report.sh   # CPU, memory, disk, services, top processes
-│   ├── disk-usage-alert.sh       # Filesystem and inode usage with top-dir scan
 │   └── service-watchdog.sh       # Monitor services, restart on failure, alert
 ├── security/
 │   ├── ssh-hardening.sh          # Harden sshd_config with dry-run and rollback
 │   └── failed-login-report.sh    # Parse auth logs, flag IPs, optional firewall block
 └── automation/
-    ├── backup-and-verify.sh      # Rsync backup with checksum verification
-    └── provision-new-server.sh   # Bootstrap a fresh server to a secure baseline
+    └── backup-and-verify.sh      # Rsync backup with checksum verification
 ```
 
 ---
@@ -63,22 +61,6 @@ sudo ./scripts/monitoring/system-health-report.sh --output /var/log/health-repor
 
 # Daily cron at 07:00
 0 7 * * * root /opt/scripts/system-health-report.sh --quiet --output /var/log/health-report.txt
-```
-
----
-
-### `disk-usage-alert.sh`
-Checks all mounted filesystems for space and inode exhaustion. Scans a directory for top space consumers to identify the culprit.
-
-**Checks:** Space usage (warn 80%, alert 90%), inode usage (same thresholds), top N directories by size, consolidated email alert.
-
-```bash
-sudo ./scripts/monitoring/disk-usage-alert.sh
-sudo ./scripts/monitoring/disk-usage-alert.sh --warn 70 --alert 85 --path /var
-sudo ./scripts/monitoring/disk-usage-alert.sh --email ops@example.com --quiet
-
-# Daily cron at 06:00
-0 6 * * * root /opt/scripts/disk-usage-alert.sh --email ops@example.com --quiet
 ```
 
 ---
@@ -159,25 +141,6 @@ sudo ./scripts/automation/backup-and-verify.sh -s /home -d /mnt/nas/backups --re
   backup_2024-01-14_02-00-00/   ← previous (pruned after --retain days)
   backup_2024-01-15_02-00-00/   ← today's run
 ```
-
----
-
-### `provision-new-server.sh`
-Bootstraps a fresh Linux server to a known secure baseline. Idempotent — safe to run multiple times without side effects. Compatible with EC2 Launch Template User Data.
-
-**Steps:** system update, baseline packages, timezone, hostname, admin user + SSH key, SSH hardening, firewall (`firewalld` on RHEL/CentOS, `ufw` on Debian/Ubuntu), unattended security upgrades, root password lock, completion log.
-
-```bash
-sudo ./scripts/automation/provision-new-server.sh \
-  --user deploy \
-  --key "ssh-ed25519 AAAA..." \
-  --hostname web-prod-01 \
-  --timezone America/New_York
-```
-
-**EC2 User Data:** paste the script directly into a Launch Template — no external dependencies required.
-
-**Writes a completion summary to `/var/log/provision.log` on every run.**
 
 ---
 
